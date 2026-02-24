@@ -15,12 +15,15 @@
 
 #define VERSION             "1.0"
 
-#define PARAMCOUNT           11
-#define LINELIMIT            256
+#define PARAMCOUNT           9
+#define LINELIMIT            128
 
-#define START                1
+#define START                1   // 要求四个空仓动作序列连续
 #define LOOP                 2
 #define END                  3
+
+#define XMCLIP               7
+#define M3CLIP               8
 
 //========================================================================================
 // INCLUDES
@@ -41,17 +44,15 @@
 int WeaponCount = 0;
 
 /**
- * <xm1014><7><8><0.5333><0.4><0><6><7><1.2><0.4><0.72>
+ * <xm1014><7><8><0><6><7><1.2><0.4><0.72>
  * 
  * <武器名>
  * <默认clipsize>：xm是7，m3是8，如果父武器是xm写7，是m3写8，反正只能写7和8这两个值
  * <实际clipsize>：武器脚本里填写的实际clipszie
- * <子弹更新时间参>
- * <结束动作时间参>：比子弹更新时间参值略小，调整直到reload_end动作看着舒服为止
  * <idle序列号>
  * <reload_end序列号>
  * <reloade_chamber序列号>
- * <reloade_chamber时间参>
+ * <reloade_chamber时间参>：根据动作帧数和fps算个完整动作时长，然后再往小调，一点点试，找到一个合适的值
  * <reloade_start时间参>
  * <reloade_loop时间参>
  */
@@ -59,9 +60,6 @@ int WeaponCount = 0;
 char WeaponNames[256][32];         // 最多支持256把加枪武器，类名最多32个字符
 int DefaultClipsize[256] = {0};
 int ActualClipsize[256] = {0};
-
-float BulletUpdateTime[256] = {0.0};
-float BulletUpdateTime2[256] = {0.0};
 
 int IdleSequence[256] = {0};
 int ReloadEndSequence[256] = {0};
@@ -71,14 +69,16 @@ float ReloadeChamberTime[256] = {0.0};
 float ReloadeStartTime[256] = {0.0};
 float ReloadeLoopTime[256] = {0.0};
 
-int StartClip[MAXPLAYERS+1] = {-1};     // 记录换弹开始时clip的子弹数，-1代表未记录
+int StartClip[MAXPLAYERS+1] = {-1};     // 记录换弹刚开始时的子弹数，-1代表未记录
 
-Handle TimerTask[MAXPLAYERS+1] = {INVALID_HANDLE};       // 更新子弹数
-Handle TimerTask2[MAXPLAYERS+1] = {INVALID_HANDLE};      // 独立处理的reload end动作
-Handle TimerTask3[MAXPLAYERS+1] = {INVALID_HANDLE};      // reloade的end
+Handle g_hTimerTask[MAXPLAYERS+1] = {INVALID_HANDLE};       // reloade的chamber
+Handle g_hTimerTask2[MAXPLAYERS+1] = {INVALID_HANDLE};      // reloade的start loop
+Handle g_hTimerTask3[MAXPLAYERS+1] = {INVALID_HANDLE};      // reloade的end
+Handle g_hRepeatTask[MAXPLAYERS+1] = {INVALID_HANDLE};      // reloade的loop
 
-Handle RepeatTask[MAXPLAYERS+1] = {INVALID_HANDLE};      // reloade的loop
-Handle RepeatTask2[MAXPLAYERS+1] = {INVALID_HANDLE};     // 用来检测是否按住左键，如果有按住就不进入空仓换弹流程，允许播放空仓检视动作，直到松开为止
+Handle g_hTimerTask4[MAXPLAYERS+1] = {INVALID_HANDLE};      // 更新子弹
+Handle g_hTimerTask5[MAXPLAYERS+1] = {INVALID_HANDLE};      // 收尾动作
+Handle g_hRepeatTask2[MAXPLAYERS+1] = {INVALID_HANDLE};     // 用来检测是否按住左键
 
 //========================================================================================
 //========================================================================================
@@ -112,28 +112,40 @@ public void Event_WeaponFire(Handle event, const char[] name, bool dontBroadcast
 
     StartClip[client] = -1;  // 重置StartClip
 
-    if (TimerTask[client] != INVALID_HANDLE)
+    if (g_hTimerTask[client] != INVALID_HANDLE)
     {
-        CloseHandle(TimerTask[client]);
-        TimerTask[client] = INVALID_HANDLE;
+        KillTimer(g_hTimerTask[client]);
+        g_hTimerTask[client] = INVALID_HANDLE;
     }
 
-    if (TimerTask2[client] != INVALID_HANDLE)
+    if (g_hTimerTask2[client] != INVALID_HANDLE)
     {
-        CloseHandle(TimerTask2[client]);
-        TimerTask2[client] = INVALID_HANDLE;
+        KillTimer(g_hTimerTask2[client]);
+        g_hTimerTask2[client] = INVALID_HANDLE;
     }
 
-    if (TimerTask3[client] != INVALID_HANDLE)
+    if (g_hTimerTask3[client] != INVALID_HANDLE)
     {
-        CloseHandle(TimerTask3[client]);
-        TimerTask3[client] = INVALID_HANDLE;
+        KillTimer(g_hTimerTask3[client]);
+        g_hTimerTask3[client] = INVALID_HANDLE;
     }
 
-    if (RepeatTask[client] != INVALID_HANDLE)
+    if (g_hTimerTask4[client] != INVALID_HANDLE)
     {
-        CloseHandle(RepeatTask[client]);
-        RepeatTask[client] = INVALID_HANDLE;
+        KillTimer(g_hTimerTask4[client]);
+        g_hTimerTask4[client] = INVALID_HANDLE;
+    }
+
+    if (g_hTimerTask5[client] != INVALID_HANDLE)
+    {
+        KillTimer(g_hTimerTask5[client]);
+        g_hTimerTask5[client] = INVALID_HANDLE;
+    }
+
+    if (g_hRepeatTask[client] != INVALID_HANDLE)
+    {
+        KillTimer(g_hRepeatTask[client]);
+        g_hRepeatTask[client] = INVALID_HANDLE;
     }
 }
 
@@ -179,64 +191,100 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
                  */
                 
                 // 避免和空仓换弹、空仓检视相互干扰
-                if (TimerTask3[client] != INVALID_HANDLE
-                || RepeatTask[client] != INVALID_HANDLE
-                || RepeatTask2[client] != INVALID_HANDLE)
+                if (g_hTimerTask[client] != INVALID_HANDLE
+                || g_hTimerTask2[client] != INVALID_HANDLE
+                || g_hTimerTask3[client] != INVALID_HANDLE
+                || g_hRepeatTask[client] != INVALID_HANDLE
+                || g_hRepeatTask2[client] != INVALID_HANDLE)
+                    return Plugin_Continue;
+
+                if (clip <= 0)
                     return Plugin_Continue;
                 
-                // 已经膛内+1了（如果实际clipsize小于默认clipsize的情况，能走这里停下就好了）
-                if (clip > ActualClipsize[index])
-                {
-                    SetEntProp(myweapon, Prop_Send, "m_reloadState", 0);
-                    buttons &= ~IN_RELOAD;
-                }
-                
-                // 没有满，但也没有在换弹，直接退出
+                // 不在换弹状态，可以直接退出
                 if (GetEntProp(myweapon, Prop_Send, "m_reloadState") == 0)
+                {
+                    // 已经达到膛内+1了，要阻止一切换弹的可能
+                    if (clip >= ActualClipsize[index] + 1)
+                    {
+                        SetEntProp(myweapon, Prop_Send, "m_reloadState", 0);
+                        buttons &= ~IN_RELOAD;
+                    }
+
                     return Plugin_Continue;
+                }
 
                 // 确实在换弹流程，且刚开始
                 if (StartClip[client] == -1)
                     StartClip[client] = clip;
         
                 // 如果默认clipsize是7 xm1014
-                if (DefaultClipsize[index] == 7 && clip >= 7)
+                if (DefaultClipsize[index] == XMCLIP)
                 {
-                    // 没有满，且备弹有余，强制发起或者说继续换弹动作
-                    if (clip < ActualClipsize[index] && ammo > 0)
+                    // 小于实际clipsize，且备弹有余，强制发起或者说继续换弹动作
+                    if (clip < ActualClipsize[index] + 1 && ammo > 0)
                     {
                         // 下面这两行代码放一起就可以反复播放换弹动作但不会更新子弹数
                         SetEntProp(myweapon, Prop_Send, "m_reloadState", 1);
                         buttons |= IN_RELOAD;
 
                         // 手动更新子弹数，这个参数设置有问题，reload start和loop的耗时不同
-                        if (TimerTask[client] == INVALID_HANDLE)
+                        if (g_hTimerTask4[client] == INVALID_HANDLE)
                         {
+                            // PrintToChatAll("分支1");
                             int data = (myweapon << 16) | client;
-                            TimerTask[client] = CreateTimer(BulletUpdateTime[index], Timer_UpdateClip, data);
+                            float delay = (clip == StartClip[client]) ? 0.7 : 0.4;
+
+                            g_hTimerTask4[client] = CreateTimer(delay, Timer_UpdateClip, data);
                         }
                     }
 
-                    // 等于实际clipsize了（暂时不考虑换弹到9的情况），处理收尾动作
-                    if (clip == ActualClipsize[index])
+                    // 在等于实际clipsize前，备弹就为0了，不知道为什么，反正不需要收尾动作
+
+                    // 等于实际clipsize了，需要特别处理收尾动作
+                    if (clip == ActualClipsize[index] + 1)
                     {
-                        if (StartClip[client] == ActualClipsize[index] - 1)
+                        // 不知道为什么最后一次loop动作有概率慢动作，姑且把这两行写上，接住上一个loop动作的感觉
+                        SetEntProp(myweapon, Prop_Send, "m_reloadState", 1);
+                        buttons |= IN_RELOAD;
+
+                        // 特别播放收尾动作
+                        if (g_hTimerTask5[client] == INVALID_HANDLE)
                         {
-                            if (TimerTask2[client] == INVALID_HANDLE)
-                                TimerTask2[client] = CreateTimer(BulletUpdateTime2[index], Timer_ReloadEndAnim, client);
-                        }
-                        else
-                        {
-                            SetSequence(client, ReloadEndSequence[index], 9999);
-                            SetEntProp(myweapon, Prop_Send, "m_reloadState", 0);
-                            StartClip[client] = -1;  // 重置StartClip
+                            // PrintToChatAll("分支2");
+                            int data = (myweapon << 16) | client;
+                            g_hTimerTask5[client] = CreateTimer(0.4, Timer_ReloadEndAnim, data);
                         }
                     }
                 }
                 // 如果默认clipsize是8 m3
-                else if (DefaultClipsize[index] == 8)
+                else if (DefaultClipsize[index] == M3CLIP)
                 {
-                    
+                    if (clip < ActualClipsize[index] + 1 && ammo > 0)
+                    {
+                        SetEntProp(myweapon, Prop_Send, "m_reloadState", 1);
+                        buttons |= IN_RELOAD;
+
+                        if (g_hTimerTask4[client] == INVALID_HANDLE)
+                        {
+                            int data = (myweapon << 16) | client;
+                            float delay = (clip == StartClip[client]) ? 0.7 : 0.4;        // 无法理解，为什么要和xm用一样的参数才正常
+
+                            g_hTimerTask4[client] = CreateTimer(delay, Timer_UpdateClip, data);
+                        }
+                    }
+
+                    if (clip == ActualClipsize[index] + 1)
+                    {
+                        SetEntProp(myweapon, Prop_Send, "m_reloadState", 1);
+                        buttons |= IN_RELOAD;
+
+                        if (g_hTimerTask5[client] == INVALID_HANDLE)
+                        {
+                            int data = (myweapon << 16) | client;
+                            g_hTimerTask5[client] = CreateTimer(0.4, Timer_ReloadEndAnim, data);
+                        }
+                    }
                 }
             }
         }
@@ -252,6 +300,11 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 public void OnClientPutInServer(int client)
 {
     SDKHook(client, SDKHook_WeaponEquipPost, OnWeaponEquip);
+}
+
+public void OnClientDisconnect_Post(int client)
+{
+    SDKUnhook(client, SDKHook_WeaponEquipPost, OnWeaponEquip);
 }
 
 public void OnWeaponEquip(int client, int weapon)
@@ -280,7 +333,7 @@ public Action OnWeaponReload(int weapon)
         if (ammo <= 0)
             return Plugin_Handled;
         
-        // 非空仓且不满弹不触发
+        // 非空仓时不触发
         if (clip > 0)
             return Plugin_Handled;
 
@@ -296,8 +349,8 @@ public Action OnWeaponReload(int weapon)
         {
             SetSequence(client, IdleSequence[index], 9999);
             
-            if (RepeatTask2[client] == INVALID_HANDLE)
-                RepeatTask2[client] = CreateTimer(0.1, Timer_CheckHoldingButton, client, TIMER_REPEAT);
+            if (g_hRepeatTask2[client] == INVALID_HANDLE)
+                g_hRepeatTask2[client] = CreateTimer(0.1, Timer_CheckHolding, client, TIMER_REPEAT);
         }
         else
         {
@@ -308,9 +361,9 @@ public Action OnWeaponReload(int weapon)
              */
             SetEntPropFloat(weapon, Prop_Send, "m_flNextPrimaryAttack", GetGameTime() + 9999.0);
 
-            SetSequence(client, ReloadeChamberSequence[index] + START, 9999);  // 要求四个序列紧挨着
+            SetSequence(client, ReloadeChamberSequence[index] + START, 9999);
 
-            CreateTimer(ReloadeStartTime[index], Timer_ReloadeChamberAnim, client);
+            g_hTimerTask[client] = CreateTimer(ReloadeStartTime[index], Timer_ReloadeChamberAnim, client);
         }
     }
     
@@ -342,12 +395,15 @@ public Action Timer_ReloadeChamberAnim(Handle timer, int client)
                 SetSequence(client, ReloadeChamberSequence[index], 9999);
 
                 if (ammo - 1 == 0)
-                    TimerTask3[client] = CreateTimer(ReloadeChamberTime[index], Timer_ReloadeEndAnim, client);    // 装填一发就结束
+                    g_hTimerTask3[client] = CreateTimer(ReloadeChamberTime[index], Timer_ReloadeEndAnim, client);    // 装填一发就结束
                 else
-                    CreateTimer(ReloadeChamberTime[index], Timer_StartReloadeLoopAnim, client);    // 继续loop
+                    g_hTimerTask2[client] = CreateTimer(ReloadeChamberTime[index], Timer_StartReloadeLoopAnim, client);    // 继续loop
             }
         }
     }
+
+    KillTimer(timer);
+    g_hTimerTask[client] = INVALID_HANDLE;
 
     return Plugin_Continue;
 }
@@ -373,10 +429,13 @@ public Action Timer_StartReloadeLoopAnim(Handle timer, int client)
                 SetEntPropFloat(weapon, Prop_Send, "m_flNextPrimaryAttack", GetGameTime() + 0.0);
 
                 SetSequence(client, ReloadeChamberSequence[index] + LOOP, 9999);
-                RepeatTask[client] = CreateTimer(ReloadeLoopTime[index], Timer_ReloadeLoopAnim, client, TIMER_REPEAT);
+                g_hRepeatTask[client] = CreateTimer(ReloadeLoopTime[index], Timer_ReloadeLoopAnim, client, TIMER_REPEAT);
             }
         }
     }
+
+    KillTimer(timer);
+    g_hTimerTask2[client] = INVALID_HANDLE;
     
     return Plugin_Continue;
 }
@@ -407,14 +466,14 @@ public Action Timer_ReloadeLoopAnim(Handle timer, int client)
                 }
                 else
                 {
-                    TimerTask3[client] = CreateTimer(0.0, Timer_ReloadeEndAnim, client);
+                    g_hTimerTask3[client] = CreateTimer(0.0, Timer_ReloadeEndAnim, client);
                 }
             }
         }
     }
 
     KillTimer(timer);
-    RepeatTask[client] = INVALID_HANDLE;
+    g_hRepeatTask[client] = INVALID_HANDLE;
 
     return Plugin_Stop;
 }
@@ -434,12 +493,13 @@ public Action Timer_ReloadeEndAnim(Handle timer, int client)
                 SetEntPropFloat(weapon, Prop_Send, "m_flNextPrimaryAttack", GetGameTime() + 0.0);
 
                 SetSequence(client, ReloadeChamberSequence[index] + END, 9999);
+                SetEntProp(weapon, Prop_Send, "m_reloadState", 0);              // 防止onplayerruncmd那也运行了
             }
         }
     }
 
     KillTimer(timer);
-    TimerTask3[client] = INVALID_HANDLE;
+    g_hTimerTask3[client] = INVALID_HANDLE;
 
     return Plugin_Continue;
 }
@@ -448,7 +508,7 @@ public Action Timer_ReloadeEndAnim(Handle timer, int client)
 // TIMER 其它
 //========================================================================================
 
-public Action Timer_CheckHoldingButton(Handle timer, int client)
+public Action Timer_CheckHolding(Handle timer, int client)
 {
     if (IsValidClient(client, true))
     {
@@ -479,7 +539,7 @@ public Action Timer_CheckHoldingButton(Handle timer, int client)
     }
 
     KillTimer(timer);
-    RepeatTask2[client] = INVALID_HANDLE;
+    g_hRepeatTask2[client] = INVALID_HANDLE;
 
     return Plugin_Stop;
 }
@@ -496,33 +556,31 @@ public Action Timer_UpdateClip(Handle timer, int data)
     SetEntProp(client, Prop_Data, "m_iAmmo", ammo - 1, 4, GetEntProp(weapon, Prop_Data, "m_iPrimaryAmmoType"));
 
     KillTimer(timer);
-    TimerTask[client] = INVALID_HANDLE;
+    g_hTimerTask4[client] = INVALID_HANDLE;
 
     return Plugin_Continue;
 }
 
-public Action Timer_ReloadEndAnim(Handle timer, int client)
+public Action Timer_ReloadEndAnim(Handle timer, int data)
 {
+    int client = data & 0xFFFF;
+    int shotgun = data >> 16;
+
     StartClip[client] = -1;  // 重置StartClip
 
     if (IsValidClient(client, true))
     {
-        int weapon = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
-        
-        if (weapon != -1)
+        if (GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon") == shotgun)
         {
-            int index = GetWeaponIndex(weapon);
+            int index = GetWeaponIndex(shotgun);
             
-            if (index != -1)
-            {
-                SetSequence(client, ReloadEndSequence[index], 9999);
-                SetEntProp(weapon, Prop_Send, "m_reloadState", 0);
-            }
+            SetSequence(client, ReloadEndSequence[index], 9999);
+            SetEntProp(shotgun, Prop_Send, "m_reloadState", 0);
         }
     }
 
     KillTimer(timer);
-    TimerTask2[client] = INVALID_HANDLE;
+    g_hTimerTask5[client] = INVALID_HANDLE;
 
     return Plugin_Continue;
 }
@@ -535,13 +593,10 @@ void SetSequence(int client, int sequence, int frame)
 {
     int ent = GetEntPropEnt(client, Prop_Send, "m_hViewModel");
 
-    // if (GetEntProp(ent, Prop_Send, "m_nSequence") == sequence) return;   // 一点用都没有
-
     SetEntProp(ent, Prop_Send, "m_nSequence", sequence);
     SetEntPropFloat(ent, Prop_Send, "m_flPlaybackRate", 1.0);
 
-    // 下面这个是必要的，否则正常loop也会想插进来播放
-    // 说实话这个时间值计算就不合理，但只有这样播放才是正确的
+    // 下面这个是必要的，否则正常loop也会想插进来播放，时间写多长都ok
     int weapon = GetEntPropEnt(client, Prop_Data, "m_hActiveWeapon");
     if (weapon != -1)
         SetEntPropFloat(weapon, Prop_Data, "m_flTimeWeaponIdle", GetGameTime() + float(frame));
@@ -599,23 +654,19 @@ void LoadConfig(char[] PATH)
                     continue;
 
                 // data 1 是整数，且只能填7或8
-                if (StringToInt(data[1]) != 7 && StringToInt(data[1]) != 8)
+                if (StringToInt(data[1]) != XMCLIP && StringToInt(data[1]) != M3CLIP)
                     continue;
 
                 // data 2 是整数，必须大于等于0
                 if (StringToInt(data[2]) < 0)
                     continue;
 
-                // data 3 和 4 是浮点数，都必须大于0
-                if (StringToFloat(data[3]) <= 0.0 || StringToFloat(data[4]) <= 0.0)
+                // data 3 和 4 和 5 是整数，必须大于等于0
+                if (StringToInt(data[3]) < 0 || StringToInt(data[4]) < 0 || StringToInt(data[5]) < 0)
                     continue;
 
-                // data 5 和 6 和 7是整数，必须大于等于0
-                if (StringToInt(data[5]) < 0 || StringToInt(data[6]) < 0 || StringToInt(data[7]) < 0)
-                    continue;
-
-                // data 8 和 9 和 10是浮点数，都必须大于0
-                if (StringToFloat(data[8]) <= 0.0 || StringToFloat(data[9]) <= 0.0 || StringToFloat(data[10]) <= 0.0)
+                // data 6 和 7 和 8 是浮点数，都必须大于0
+                if (StringToFloat(data[6]) <= 0.0 || StringToFloat(data[7]) <= 0.0 || StringToFloat(data[8]) <= 0.0)
                     continue;
 
                 // 确认合法，至少后面不会报错
@@ -625,16 +676,13 @@ void LoadConfig(char[] PATH)
                 DefaultClipsize[WeaponCount] = StringToInt(data[1]);
                 ActualClipsize[WeaponCount] = StringToInt(data[2]);
 
-                BulletUpdateTime[WeaponCount] = StringToFloat(data[3]);
-                BulletUpdateTime2[WeaponCount] = StringToFloat(data[4]);
+                IdleSequence[WeaponCount] = StringToInt(data[3]);
+                ReloadEndSequence[WeaponCount] = StringToInt(data[4]);
+                ReloadeChamberSequence[WeaponCount] = StringToInt(data[5]);
 
-                IdleSequence[WeaponCount] = StringToInt(data[5]);
-                ReloadEndSequence[WeaponCount] = StringToInt(data[6]);
-                ReloadeChamberSequence[WeaponCount] = StringToInt(data[7]);
-
-                ReloadeChamberTime[WeaponCount] = StringToFloat(data[8]);
-                ReloadeStartTime[WeaponCount] = StringToFloat(data[9]);
-                ReloadeLoopTime[WeaponCount] = StringToFloat(data[10]);
+                ReloadeChamberTime[WeaponCount] = StringToFloat(data[6]);
+                ReloadeStartTime[WeaponCount] = StringToFloat(data[7]);
+                ReloadeLoopTime[WeaponCount] = StringToFloat(data[8]);
             }
         }
 
