@@ -219,11 +219,17 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 
                     if (clip == ActualClipsize[index])
                     {
-                        if ((buttons & IN_RELOAD) && ammo > 1)
+                        if ((buttons & IN_RELOAD) && ammo > 0
+                        && GetEntPropFloat(client, Prop_Data, "m_flNextAttack") <= GetGameTime()
+                        && GetEntPropFloat(myweapon, Prop_Send, "m_flNextPrimaryAttack") <= GetGameTime())
                         {
                             // PrintToChatAll("分支3");   
+                            /**
+                             * 难受，clip+1之后，本来可以发起换弹动作。
+                             * 但因为ammo为0了，又发不起换弹动作，m_reloadState一直为0。
+                             * 原来不止clip会影响，ammo也会啊。
+                             */
                             SetEntProp(myweapon, Prop_Send, "m_iClip1", clip + 1);
-                            SetEntProp(client, Prop_Data, "m_iAmmo", ammo - 1, 4, GetEntProp(myweapon, Prop_Data, "m_iPrimaryAmmoType"));
                         }
                     }
 
@@ -291,11 +297,14 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
                         if (g_hTimerTask4[client] == INVALID_HANDLE)
                         {
                             int data = (myweapon << 16) | client;
-                            float delay = (clip == StartClip[client]) ? 0.7 : 0.45;        // 无法理解，为什么要和xm用一样的参数才正常
+                            float delay = (clip == StartClip[client]) ? 0.7 : 0.45;
 
                             g_hTimerTask4[client] = CreateTimer(delay, Timer_UpdateClip, data);
                         }
                     }
+
+                    if (ammo <= 0)
+                        StartClip[client] = -1;
 
                     if (clip == ActualClipsize[index] + 1)
                     {
@@ -305,7 +314,9 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
                         if (g_hTimerTask5[client] == INVALID_HANDLE)
                         {
                             int data = (myweapon << 16) | client;
-                            g_hTimerTask5[client] = CreateTimer(0.45, Timer_ReloadEndAnim, data);
+                            float delay = (ActualClipsize[index] + 1 == StartClip[client]) ? 0.95 : 0.45;
+                            
+                            g_hTimerTask5[client] = CreateTimer(delay, Timer_ReloadEndAnim, data);
                         }
                     }
                 }
@@ -616,8 +627,6 @@ public Action Timer_ReloadEndAnim(Handle timer, int data)
     int client = data & 0xFFFF;
     int shotgun = data >> 16;
 
-    StartClip[client] = -1;  // 重置StartClip
-
     if (IsValidClient(client, true))
     {
         if (GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon") == shotgun)
@@ -626,8 +635,16 @@ public Action Timer_ReloadEndAnim(Handle timer, int data)
             
             SetSequence(client, ReloadEndSequence[index], 9999);
             SetEntProp(shotgun, Prop_Send, "m_reloadState", 0);
+
+            if (ActualClipsize[index] + 1 == StartClip[client])
+            {
+                int ammo = GetEntProp(client, Prop_Data, "m_iAmmo", 4, GetEntProp(shotgun, Prop_Data, "m_iPrimaryAmmoType"));
+                SetEntProp(client, Prop_Data, "m_iAmmo", ammo - 1, 4, GetEntProp(shotgun, Prop_Data, "m_iPrimaryAmmoType"));
+            }
         }
     }
+
+    StartClip[client] = -1;  // 重置StartClip
 
     KillTimer(timer);
     g_hTimerTask5[client] = INVALID_HANDLE;
