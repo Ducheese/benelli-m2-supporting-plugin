@@ -59,6 +59,7 @@ int WeaponCount = 0;
  * <reloade_loop时间参>
  */
 
+bool g_bflag[MAXPLAYERS+1] = {false,...};
 int ClientVM3[MAXPLAYERS+1][2];    // 存放客户端的两个视图模型
 
 char WeaponNames[256][32];         // 最多支持256把加枪武器，类名最多32个字符
@@ -114,8 +115,6 @@ public void Event_WeaponFire(Handle event, const char[] name, bool dontBroadcast
 {
     int client = GetClientOfUserId(GetEventInt(event, "userid"));
 
-    StartClip[client] = -1;  // 重置StartClip
-
     if (g_hTimerTask[client] != INVALID_HANDLE)
     {
         KillTimer(g_hTimerTask[client]);
@@ -142,6 +141,32 @@ public void Event_WeaponFire(Handle event, const char[] name, bool dontBroadcast
 
     if (g_hTimerTask5[client] != INVALID_HANDLE)
     {
+        // 补偿
+        if (IsValidClient(client, true))
+        {
+            int weapon = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
+            
+            if (weapon != -1)
+            {
+                int index = GetWeaponIndex(weapon);
+                
+                if (index != -1)
+                {
+                    if (ActualClipsize[index] + 1 == StartClip[client])
+                    {
+                        int ammo = GetEntProp(client, Prop_Data, "m_iAmmo", 4, GetEntProp(weapon, Prop_Data, "m_iPrimaryAmmoType"));
+
+                        if (!g_bflag[client])
+                            SetEntProp(client, Prop_Data, "m_iAmmo", ammo - 1, 4, GetEntProp(weapon, Prop_Data, "m_iPrimaryAmmoType"));
+                        else
+                            g_bflag[client] = false;
+                    }
+                }
+            }
+        }
+
+        StartClip[client] = -1;  // 重置StartClip
+
         KillTimer(g_hTimerTask5[client]);
         g_hTimerTask5[client] = INVALID_HANDLE;
     }
@@ -230,6 +255,12 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
                              * 原来不止clip会影响，ammo也会啊。
                              */
                             SetEntProp(myweapon, Prop_Send, "m_iClip1", clip + 1);
+
+                            if (ammo - 1 > 0)
+                            {
+                                g_bflag[client] = true;
+                                SetEntProp(client, Prop_Data, "m_iAmmo", ammo - 1, 4, GetEntProp(myweapon, Prop_Data, "m_iPrimaryAmmoType"));
+                            }
                         }
                     }
 
@@ -639,7 +670,11 @@ public Action Timer_ReloadEndAnim(Handle timer, int data)
             if (ActualClipsize[index] + 1 == StartClip[client])
             {
                 int ammo = GetEntProp(client, Prop_Data, "m_iAmmo", 4, GetEntProp(shotgun, Prop_Data, "m_iPrimaryAmmoType"));
-                SetEntProp(client, Prop_Data, "m_iAmmo", ammo - 1, 4, GetEntProp(shotgun, Prop_Data, "m_iPrimaryAmmoType"));
+
+                if (!g_bflag[client])
+                    SetEntProp(client, Prop_Data, "m_iAmmo", ammo - 1, 4, GetEntProp(shotgun, Prop_Data, "m_iPrimaryAmmoType"));
+                else
+                    g_bflag[client] = false;
             }
         }
     }
