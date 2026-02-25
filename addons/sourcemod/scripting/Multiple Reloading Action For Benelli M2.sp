@@ -5,8 +5,8 @@
  * √. 其次，实现霰弹枪的弹膛+1动作 -> 通过改timer的时间值，姑且算实现了子弹数变化与动作的同步；
  * √. 其次，需要阻止9以上的重复换弹 -> 现在只要设置m_reloadState为0就行了，很好解决；
  * √. 其次，实现按住左键时能触发空仓检视 -> 有可能做不了，因为reload start动作不可控 -> 最后解决的很完美；
- * 6. 其次，适配机瞄插件；
- * 7. 最后，支持外部配置文件。
+ * √. 其次，适配机瞄插件；
+ * √. 最后，支持外部配置文件。
  */
 
 //========================================================================================
@@ -24,6 +24,8 @@
 
 #define XMCLIP               7
 #define M3CLIP               8
+
+#define EF_NODRAW            32
 
 //========================================================================================
 // INCLUDES
@@ -57,6 +59,8 @@ int WeaponCount = 0;
  * <reloade_loop时间参>
  */
 
+int ClientVM3[MAXPLAYERS+1][2];    // 存放客户端的两个视图模型
+
 char WeaponNames[256][32];         // 最多支持256把加枪武器，类名最多32个字符
 int DefaultClipsize[256] = {0};
 int ActualClipsize[256] = {0};
@@ -69,7 +73,7 @@ float ReloadeChamberTime[256] = {0.0};
 float ReloadeStartTime[256] = {0.0};
 float ReloadeLoopTime[256] = {0.0};
 
-int StartClip[MAXPLAYERS+1] = {-1};     // 记录换弹刚开始时的子弹数，-1代表未记录
+int StartClip[MAXPLAYERS+1] = {-1,...};     // 记录换弹刚开始时的子弹数，-1代表未记录（之前的写法初始化不完全，我吐了）
 
 Handle g_hTimerTask[MAXPLAYERS+1] = {INVALID_HANDLE};       // reloade的chamber
 Handle g_hTimerTask2[MAXPLAYERS+1] = {INVALID_HANDLE};      // reloade的start loop
@@ -165,6 +169,7 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
             
             if (index != -1)
             {
+                // PrintToChatAll("==============");
                 int ammo = GetEntProp(client, Prop_Data, "m_iAmmo", 4, GetEntProp(myweapon, Prop_Data, "m_iPrimaryAmmoType"));
                 int clip = GetEntProp(myweapon, Prop_Send, "m_iClip1");
 
@@ -207,8 +212,19 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
                     // 已经达到膛内+1了，要阻止一切换弹的可能
                     if (clip >= ActualClipsize[index] + 1)
                     {
+                        // PrintToChatAll("分支4");
                         SetEntProp(myweapon, Prop_Send, "m_reloadState", 0);
                         buttons &= ~IN_RELOAD;
+                    }
+
+                    if (clip == ActualClipsize[index])
+                    {
+                        if ((buttons & IN_RELOAD) && ammo > 1)
+                        {
+                            // PrintToChatAll("分支3");   
+                            SetEntProp(myweapon, Prop_Send, "m_iClip1", clip + 1);
+                            SetEntProp(client, Prop_Data, "m_iAmmo", ammo - 1, 4, GetEntProp(myweapon, Prop_Data, "m_iPrimaryAmmoType"));
+                        }
                     }
 
                     return Plugin_Continue;
@@ -217,6 +233,9 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
                 // 确实在换弹流程，且刚开始
                 if (StartClip[client] == -1)
                     StartClip[client] = clip;
+
+                HideIronSightModel(client);
+                // PrintToChatAll("分支5, StartClip[client] = %d", StartClip[client]); 
         
                 // 如果默认clipsize是7 xm1014
                 if (DefaultClipsize[index] == XMCLIP)
@@ -239,7 +258,9 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
                         }
                     }
 
-                    // 在等于实际clipsize前，备弹就为0了，不知道为什么，反正不需要收尾动作
+                    // 在等于实际clipsize前，备弹就为0了，不知道为什么，反正不需要收尾动作（啊，忘了重置startclip）
+                    if (ammo <= 0)
+                        StartClip[client] = -1;
 
                     // 等于实际clipsize了，需要特别处理收尾动作
                     if (clip == ActualClipsize[index] + 1)
@@ -253,7 +274,9 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
                         {
                             // PrintToChatAll("分支2");
                             int data = (myweapon << 16) | client;
-                            g_hTimerTask5[client] = CreateTimer(0.4, Timer_ReloadEndAnim, data);
+                            float delay = (ActualClipsize[index] + 1 == StartClip[client]) ? 1.0 : 0.4;
+                            
+                            g_hTimerTask5[client] = CreateTimer(delay, Timer_ReloadEndAnim, data);
                         }
                     }
                 }
@@ -268,7 +291,7 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
                         if (g_hTimerTask4[client] == INVALID_HANDLE)
                         {
                             int data = (myweapon << 16) | client;
-                            float delay = (clip == StartClip[client]) ? 0.7 : 0.4;        // 无法理解，为什么要和xm用一样的参数才正常
+                            float delay = (clip == StartClip[client]) ? 0.7 : 0.45;        // 无法理解，为什么要和xm用一样的参数才正常
 
                             g_hTimerTask4[client] = CreateTimer(delay, Timer_UpdateClip, data);
                         }
@@ -282,10 +305,12 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
                         if (g_hTimerTask5[client] == INVALID_HANDLE)
                         {
                             int data = (myweapon << 16) | client;
-                            g_hTimerTask5[client] = CreateTimer(0.4, Timer_ReloadEndAnim, data);
+                            g_hTimerTask5[client] = CreateTimer(0.45, Timer_ReloadEndAnim, data);
                         }
                     }
                 }
+
+                // PrintToChatAll("==============");
             }
         }
     }
@@ -296,6 +321,29 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 //========================================================================================
 // SDKHOOK
 //========================================================================================
+
+public void OnEntityCreated(int entity, const char[] classname)
+{ 
+    if (StrEqual(classname, "predicted_viewmodel", false))
+        SDKHook(entity, SDKHook_Spawn, OnEntitySpawned2);
+}
+
+public void OnEntitySpawned2(int entity)
+{
+    int Owner = GetEntPropEnt(entity, Prop_Send, "m_hOwner");
+
+    if ((Owner > 0) && (Owner <= MaxClients))
+    {
+        if (GetEntProp(entity, Prop_Send, "m_nViewModelIndex") == 0)
+        {
+            ClientVM3[Owner][0] = entity;
+        }
+        else if (GetEntProp(entity, Prop_Send, "m_nViewModelIndex") == 1)
+        {
+            ClientVM3[Owner][1] = entity;
+        }
+    }
+}
 
 public void OnClientPutInServer(int client)
 {
@@ -336,6 +384,8 @@ public Action OnWeaponReload(int weapon)
         // 非空仓时不触发
         if (clip > 0)
             return Plugin_Handled;
+
+        HideIronSightModel(client);
 
         /**
          * 打空子弹并长按左键时，允许空仓检视
@@ -588,6 +638,23 @@ public Action Timer_ReloadEndAnim(Handle timer, int data)
 //========================================================================================
 // FUCTIONS
 //========================================================================================
+
+void HideIronSightModel(int client)
+{
+    // cjsrk改进部分：对于某些正处于机瞄状态的武器，需作特殊处理使刀模能显示出来
+    int EntEffects = GetEntProp(ClientVM3[client][0], Prop_Send, "m_fEffects");    
+    int EntEffects2 = GetEntProp(ClientVM3[client][1], Prop_Send, "m_fEffects");
+
+    if (EntEffects == EF_NODRAW && EntEffects2 == 0)
+    {
+        EntEffects2 |= EF_NODRAW;
+        SetEntProp(ClientVM3[client][1], Prop_Send, "m_fEffects", EntEffects2);
+        
+        EntEffects2 = GetEntProp(ClientVM3[client][0], Prop_Send, "m_fEffects");
+        EntEffects2 &= ~EF_NODRAW;
+        SetEntProp(ClientVM3[client][0], Prop_Send, "m_fEffects", EntEffects2);
+    } 
+}
 
 void SetSequence(int client, int sequence, int frame)
 {
