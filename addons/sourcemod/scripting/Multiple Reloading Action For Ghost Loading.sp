@@ -1,7 +1,7 @@
 /**
  * 因为m_reloadState这一新属性的存在，所以对插件进行重写：
  * √. 首先，实现xm1014从7到8发的上弹 -> 7到8发实现了，但多了两个时间参，9发只能靠空仓换弹；
- * 2. 其次，如果实际clipsize为8，可以主动上弹到9发 -> 被放弃的改进点，最好还是实现一下；
+ * √. 其次，如果实际clipsize为8，可以主动上弹到9发 -> 被放弃的改进点，最好还是实现一下；
  * √. 其次，实现霰弹枪的弹膛+1动作 -> 通过改timer的时间值，姑且算实现了子弹数变化与动作的同步；
  * √. 其次，需要阻止9以上的重复换弹 -> 现在只要设置m_reloadState为0就行了，很好解决；
  * √. 其次，实现按住左键时能触发空仓检视 -> 有可能做不了，因为reload start动作不可控 -> 最后解决的很完美；
@@ -53,10 +53,10 @@ int WeaponCount = 0;
  * <实际clipsize>：武器脚本里填写的实际clipszie
  * <idle序列号>
  * <reload_end序列号>
- * <reloade_chamber序列号>
+ * <reloade_chamber序列号>：要求四个空仓动作序列连续，reloade_chamber -> start -> loop -> end (虽然实际播放时是start -> chamber -> loop -> end)
  * <reloade_chamber时间参>：根据动作帧数和fps算个完整动作时长，然后再往小调，一点点试，找到一个合适的值
  * <reloade_start时间参>
- * <reloade_loop时间参>
+ * <reloade_loop时间参>：qc里，这个动作必须加loop
  */
 
 bool g_bflag[MAXPLAYERS+1] = {false,...};
@@ -90,7 +90,7 @@ Handle g_hRepeatTask2[MAXPLAYERS+1] = {INVALID_HANDLE};     // 用来检测是�
 
 public Plugin myinfo =
 {
-    name = "Multiple Reloading Action For Tube-Fed Shotgun",
+    name = "Multiple Reloading Action For Ghost Loading",
     author = "Ducheese",
     description = "<- Description ->",
     version = VERSION,
@@ -104,7 +104,7 @@ public void OnPluginStart()
 
 public void OnMapStart()
 {
-    LoadConfig("configs/MultipleReloadingAction For TubeFed.txt");
+    LoadConfig("configs/GhostLoading.txt");
 }
 
 //========================================================================================
