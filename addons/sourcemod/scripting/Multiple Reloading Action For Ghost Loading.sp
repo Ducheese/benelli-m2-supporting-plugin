@@ -390,6 +390,9 @@ public void OnEntitySpawned2(int entity)
 public void OnClientPutInServer(int client)
 {
     SDKHook(client, SDKHook_WeaponEquipPost, OnWeaponEquip);
+
+    if (!IsFakeClient(client))
+        ClientCommand(client, "sv_client_predict 0");
 }
 
 public void OnClientDisconnect_Post(int client)
@@ -439,7 +442,7 @@ public Action OnWeaponReload(int weapon)
 
         if (buttons&IN_ATTACK)
         {
-            SetSequence(client, IdleSequence[index], 9999);
+            SetSequence(client, IdleSequence[index]);
             
             if (g_hRepeatTask2[client] == INVALID_HANDLE)
                 g_hRepeatTask2[client] = CreateTimer(0.1, Timer_CheckHolding, client, TIMER_REPEAT);
@@ -453,7 +456,7 @@ public Action OnWeaponReload(int weapon)
              */
             SetEntPropFloat(weapon, Prop_Send, "m_flNextPrimaryAttack", GetGameTime() + 9999.0);
 
-            SetSequence(client, ReloadeChamberSequence[index] + START, 9999);
+            SetSequence(client, ReloadeChamberSequence[index] + START);
 
             g_hTimerTask[client] = CreateTimer(ReloadeStartTime[index], Timer_ReloadeChamberAnim, client);
         }
@@ -484,7 +487,7 @@ public Action Timer_ReloadeChamberAnim(Handle timer, int client)
                 SetEntProp(weapon, Prop_Send, "m_iClip1", clip + 1);
                 SetEntProp(client, Prop_Data, "m_iAmmo", ammo - 1, 4, GetEntProp(weapon, Prop_Data, "m_iPrimaryAmmoType"));
 
-                SetSequence(client, ReloadeChamberSequence[index], 9999);
+                SetSequence(client, ReloadeChamberSequence[index]);
 
                 if (ammo - 1 == 0)
                     g_hTimerTask3[client] = CreateTimer(ReloadeChamberTime[index], Timer_ReloadeEndAnim, client);    // 装填一发就结束
@@ -519,8 +522,8 @@ public Action Timer_StartReloadeLoopAnim(Handle timer, int client)
                 SetEntProp(client, Prop_Data, "m_iAmmo", ammo - 1, 4, GetEntProp(weapon, Prop_Data, "m_iPrimaryAmmoType"));
 
                 SetEntPropFloat(weapon, Prop_Send, "m_flNextPrimaryAttack", GetGameTime() + 0.0);
-
-                SetSequence(client, ReloadeChamberSequence[index] + LOOP, 9999);
+                
+                SetSequence(client, ReloadeChamberSequence[index] + LOOP);
                 g_hRepeatTask[client] = CreateTimer(ReloadeLoopTime[index], Timer_ReloadeLoopAnim, client, TIMER_REPEAT);
             }
         }
@@ -552,7 +555,7 @@ public Action Timer_ReloadeLoopAnim(Handle timer, int client)
                     SetEntProp(weapon, Prop_Send, "m_iClip1", clip + 1);
                     SetEntProp(client, Prop_Data, "m_iAmmo", ammo - 1, 4, GetEntProp(weapon, Prop_Data, "m_iPrimaryAmmoType"));
 
-                    SetSequence(client, ReloadeChamberSequence[index] + LOOP, 9999);
+                    SetSequence(client, ReloadeChamberSequence[index] + LOOP);
 
                     return Plugin_Continue;
                 }
@@ -584,7 +587,7 @@ public Action Timer_ReloadeEndAnim(Handle timer, int client)
             {
                 SetEntPropFloat(weapon, Prop_Send, "m_flNextPrimaryAttack", GetGameTime() + 0.0);
 
-                SetSequence(client, ReloadeChamberSequence[index] + END, 9999);
+                SetSequence(client, ReloadeChamberSequence[index] + END);
                 SetEntProp(weapon, Prop_Send, "m_reloadState", 0);              // 防止onplayerruncmd那也运行了
             }
         }
@@ -664,7 +667,7 @@ public Action Timer_ReloadEndAnim(Handle timer, int data)
         {
             int index = GetWeaponIndex(shotgun);
             
-            SetSequence(client, ReloadEndSequence[index], 9999);
+            SetSequence(client, ReloadEndSequence[index]);
             SetEntProp(shotgun, Prop_Send, "m_reloadState", 0);
 
             if (ActualClipsize[index] + 1 == StartClip[client])
@@ -708,17 +711,24 @@ void HideIronSightModel(int client)
     } 
 }
 
-void SetSequence(int client, int sequence, int frame)
+void SetSequence(int client, int sequence, float duration = 9999.0)
 {
     int ent = GetEntPropEnt(client, Prop_Send, "m_hViewModel");
 
     SetEntProp(ent, Prop_Send, "m_nSequence", sequence);
     SetEntPropFloat(ent, Prop_Send, "m_flPlaybackRate", 1.0);
 
+    // 同时递增动画校验值，确保客户端能检测到这个变化
+    int currentParity = GetEntProp(ent, Prop_Send, "m_nAnimationParity");
+    SetEntProp(ent, Prop_Send, "m_nAnimationParity", (currentParity + 1) & 7);
+
+    int currentNewSeqParity = GetEntProp(ent, Prop_Send, "m_nNewSequenceParity");
+    SetEntProp(ent, Prop_Send, "m_nNewSequenceParity", (currentNewSeqParity + 1) & 3);
+
     // 下面这个是必要的，否则正常loop也会想插进来播放，时间写多长都ok
     int weapon = GetEntPropEnt(client, Prop_Data, "m_hActiveWeapon");
     if (weapon != -1)
-        SetEntPropFloat(weapon, Prop_Data, "m_flTimeWeaponIdle", GetGameTime() + float(frame));
+        SetEntPropFloat(weapon, Prop_Data, "m_flTimeWeaponIdle", GetGameTime() + duration);
 }
 
 int GetWeaponIndex(int weapon)
